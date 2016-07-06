@@ -1,0 +1,3 @@
+name = Multistep Form
+description = Framework for ajax multistep forms.
+core = 7.x

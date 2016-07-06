@@ -1,0 +1,4 @@
+name = Multistep Form Example
+description = Example of ajax multistep form.
+core = 7.x
+dependencies[] = mf

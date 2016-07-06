@@ -1,0 +1,429 @@
+<?php
+/**
+ * @file
+ * Provides multistep form API.
+ * todo: Provide form settings in hook_forms_info().
+ * todo: Setting to enable/disable ajax in form.
+ */
+
+module_load_include('inc', 'mf', 'includes/panes');
+
+/**
+ * Builds the multi-step form.
+ * todo: save form storage SESSION; restore it if user reloads page.
+ * todo: check if we need validate and messages like in commerce_checkout.
+ */
+function mf_form($form, &$form_state, $mf_id) {
+
+  $form['#prefix'] = '<div id="mf-form-wrapper">';
+  $form['#suffix'] = '</div>';
+  $form['#tree'] = TRUE;
+  $form_state['storage']['mf_id'] = $mf_id;
+
+  // If no step is specified, default to the first one.
+  if (empty($form_state['storage']['step'])) {
+    if (!$first_step = mf_first_step_load($mf_id)) {
+      drupal_set_message(t('Can not find steps for multistep form %id', array('%id' => $mf_id)), 'error');
+      return $form;
+    }
+    $form_state['storage']['step'] = $first_step;
+  }
+  $step = $form_state['storage']['step'];
+
+  $form[$step['step_id']] = array(
+    '#type' => 'container',
+    '#attributes' => array('class' => array(drupal_html_class($step['step_id']))),
+  );
+
+  // Add any enabled checkout panes for this step to the form.
+  foreach ($step['panes'] as $pane_id) {
+    if(!$mf_panes = mf_panes(array('pane_id' => $pane_id, 'enabled' => TRUE))) {
+      continue;
+    }
+    $pane = $mf_panes[$pane_id];
+    if ($callback = mf_pane_callback($pane, 'form')) {
+
+      // Generate the pane form.
+      $values = array();
+      if (!empty($form_state['values'][$step['step_id']][$pane_id])) {
+        $values = &$form_state['values'][$step['step_id']][$pane_id];
+      }
+      $pane_form = $callback($form, $form_state, $values, $pane);
+
+      // Create a container for the pane.
+      if ($pane_form) {
+        $form[$step['step_id']][$pane_id] = $pane_form + array(
+            '#type' => $pane['fieldset'] ? 'fieldset' : 'container',
+            '#title' => check_plain($pane['title']),
+            '#collapsible' => $pane['collapsible'],
+            '#collapsed' => $pane['collapsed'],
+            '#attributes' => array('class' => array(drupal_html_class($pane_id))),
+            '#tree' => TRUE,
+          );
+      }
+    }
+  }
+
+  // Only add buttons to the form if the settings step hasn't disabled them.
+  if ($step['buttons']) {
+    $form['actions'] = array('#type' => 'actions');
+
+    // Next button.
+    $form['actions']['next'] = array(
+      '#type' => 'submit',
+      '#value' => $step['next_value'],
+      '#attributes' => array('class' => array('mf-next')),
+      '#ajax' => array(
+        'wrapper' => 'mf-form-wrapper',
+        'callback' => 'mf_ajax_callback',
+      ),
+    );
+
+    // Back button. Show if previous step exists.
+    if ($step['prev_step']) {
+      $form['actions']['back'] = array(
+        '#type' => 'submit',
+        '#value' => $step['back_value'],
+        '#attributes' => array('class' => array('mf-back')),
+        '#limit_validation_errors' => array(),
+        '#ajax' => array(
+          'wrapper' => 'mf-form-wrapper',
+          'callback' => 'mf_ajax_callback',
+        ),
+      );
+    }
+
+    // todo: Cancel button.
+  }
+
+  return $form;
+}
+
+/**
+ * Ajax callback for multistep form.
+ */
+function mf_ajax_callback($form, $form_state) {
+  return $form;
+}
+
+/**
+ * Submit callback for multistep form.
+ */
+function mf_form_submit($form, &$form_state) {
+  $step = $form_state['storage']['step'];
+  $mf_id = $form_state['storage']['mf_id'];
+
+  // Save form values when move to the next step.
+  if (!empty($form_state['values'][$step['step_id']])) {
+    $form_state['storage']['values'][$step['step_id']] = $form_state['values'][$step['step_id']];
+  }
+
+  // Next form step.
+  if (isset($form['actions']['next']['#value'])
+    && $form_state['triggering_element']['#value'] == $form['actions']['next']['#value']) {
+
+    // Finish multistep.
+    $last_step = mf_last_step_load($mf_id);
+    $step_is_last = ($step['next_step'] == $last_step['step_id'] && !$last_step['buttons']);
+    if(!isset($form['actions']['next']['#value']) || $step_is_last){
+      mf_complete($form, $form_state);
+      // todo: check if we can implement finish without form state rebuild.
+      //$form_state['rebuild'] = FALSE;
+      //return;
+    }
+
+    // Pass next step to form state if step exists.
+    if ($step['next_step']) {
+      $form_state['storage']['step'] = mf_step_load($mf_id, $step['next_step']);
+
+      // If the data for the next step has been entered, pass it to the form.
+      $step_next_id = $step['next_step'];
+      if (!empty($form_state['storage']['values'][$step_next_id])) {
+        $form_state['values'][$step_next_id] = $form_state['storage']['values'][$step_next_id];
+      }
+    }
+  }
+
+  // Previous form step.
+  if (isset($form['actions']['back']['#value'])
+    && $form_state['triggering_element']['#value'] == $form['actions']['back']['#value']) {
+
+    // Pass previous step to form state if step exists.
+    if ($step['prev_step']) {
+      $form_state['storage']['step'] = mf_step_load($mf_id, $step['prev_step']);
+    }
+    // If there is no previous step - pass first step to form state.
+    else {
+      $steps = mf_steps($mf_id);
+      $form_state['storage']['step'] = reset($steps);
+    }
+
+    // If the data for the next step has been entered, pass it to the form.
+    $step_prev_id = $form_state['storage']['step']['step_id'];
+    if (!empty($form_state['storage']['values'][$step_prev_id])) {
+      $form_state['values'][$step_prev_id] = $form_state['storage']['values'][$step_prev_id];
+    }
+  }
+
+  $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Completes multistep form.
+ */
+function mf_complete($form, $form_state) {
+  module_invoke_all('mf_complete', $form, $form_state);
+}
+
+/**
+ * Returns a first step.
+ *
+ * @param string $mf_id
+ *   The ID of multistep form.
+ *
+ * @return object
+ *   The fully loaded step first. FALSE if not found.
+ */
+function mf_first_step_load($mf_id) {
+  $steps = mf_steps($mf_id);
+  return reset($steps);
+}
+
+/**
+ * Returns a last step.
+ *
+ * @param string $mf_id
+ *   The ID of multistep form.
+ *
+ * @return object
+ *   The fully loaded last step. FALSE if not found.
+ */
+function mf_last_step_load($mf_id) {
+  if(!$steps = mf_steps($mf_id)) {
+    return FALSE;
+  }
+  return end($steps);
+}
+
+/**
+ * Returns a step object.
+ *
+ * @param string $mf_id
+ *   The ID of multistep form.
+ * @param string $step_id
+ *   The ID of the step to return.
+ *
+ * @return object
+ *   The fully loaded step object or FALSE if not found.
+ */
+function mf_step_load($mf_id, $step_id) {
+  $steps = mf_steps($mf_id);
+
+  // If a step was specified that does not exist, return FALSE.
+  if (empty($steps[$step_id])) {
+    return FALSE;
+  }
+
+  // Otherwise, return the specified step.
+  return $steps[$step_id];
+}
+
+/**
+ * Returns an array of multi-step form steps defined by enabled modules.
+ *
+ * @param string $mf_id
+ *   Multistep form id.
+ *
+ * @return  array
+ *   An associative array of step objects keyed by the step_id.
+ */
+function mf_steps($mf_id) {
+  $mf_steps = module_invoke_all('mf_steps_info');
+  drupal_alter('mf_steps_info', $mf_steps);
+
+  if(!array_key_exists($mf_id, $mf_steps)) {
+    return FALSE;
+  }
+
+  $steps = &drupal_static(__FUNCTION__);
+
+  // If the checkout steps haven't been defined yet, do so now.
+  if (empty($steps)) {
+    $count = 0;
+    $steps = $mf_steps[$mf_id];
+    foreach ($steps as $step_id => $step) {
+      $defaults = array(
+        'step_id' => $step_id,
+        'name' => $step['title'],
+        'title' => '',
+        'help' => '',
+        'buttons' => TRUE,
+        'back_value' => t('Back'),
+        'next_value' => t('Next'),
+        'prev_step' => NULL,
+        'next_step' => NULL,
+      );
+      $steps[$step_id] += $defaults;
+
+      // Set a weight that preserves the order of 0 weighted steps.
+      if (empty($step['weight'])) {
+        $steps[$step_id]['weight'] = $count++ / count($steps);
+      }
+    }
+
+    uasort($steps, 'drupal_sort_weight');
+    $last_step = end($steps);
+
+    // Initialize the previous and next steps.
+    $previous_step_id = NULL;
+
+    foreach ($steps as &$step) {
+      // Look for any steps assigned to this step.
+      $panes = array();
+      foreach ($step['panes'] as $pane_id) {
+        $panes += mf_panes(array('pane_id' => $pane_id, 'enabled' => TRUE));
+      }
+
+      // If this is the completion step or at least one pane was found...
+      if ($step['step_id'] == $last_step['step_id'] || !empty($panes)) {
+        // If a step has been stored as the previous step...
+        if ($previous_step_id) {
+          // Set the current step's previous step and the previous step's next.
+          $step['prev_step'] = $previous_step_id;
+          $steps[$previous_step_id]['next_step'] = $step['step_id'];
+        }
+
+        // Set the current step as the previous step for the next iteration.
+        $previous_step_id = $step['step_id'];
+      }
+    }
+  }
+
+  return $steps;
+}
+
+/**
+ * Return a filtered array of multi-step form pane objects.
+ *
+ * @param $conditions
+ *   An array of conditions to filter the returned list by; for example, if you
+ *   specify 'enabled' => TRUE in the array, then only checkout panes with an
+ *   enabled value equal to TRUE would be included.
+ *
+ * @return array
+ *   The array of checkout pane objects, keyed by pane ID.
+ */
+function mf_panes($conditions = array()) {
+  $panes = &drupal_static(__FUNCTION__);
+
+  // Cache the saved checkout pane data if it hasn't been loaded yet.
+  if (!isset($panes)) {
+
+    // Load panes defined by modules.
+    $panes = array();
+
+    foreach (module_implements('mf_pane_info') as $module) {
+      foreach (module_invoke($module, 'mf_pane_info') as $pane_id => $pane) {
+        $pane['pane_id'] = $pane_id;
+        $pane['module'] = $module;
+        $panes[$pane_id] = $pane;
+      }
+    }
+
+    drupal_alter('mf_pane_info', $panes);
+
+    // Merge in defaults.
+    foreach ($panes as $pane_id => $pane) {
+      // Set some defaults for the checkout pane.
+      $defaults = array(
+        'pane_id' => $pane_id,
+        'name' => $pane['title'],
+        'fieldset' => TRUE,
+        'collapsible' => FALSE,
+        'collapsed' => FALSE,
+        'weight' => 0,
+        'enabled' => TRUE,
+        //'review' => TRUE, todo: create default review pane.
+        'callbacks' => array(),
+        'file' => '',
+      );
+      $pane += $defaults;
+
+      // Merge in default callbacks.
+      // todo: check/implement all callbacks in mf_example.
+      foreach (array('settings_form', 'form', 'form_validate', 'form_submit', 'review') as $callback) {
+        if (!isset($pane['callbacks'][$callback])) {
+          $pane['callbacks'][$callback] = "{$pane['module']}_{$pane_id}_pane_{$callback}";
+        }
+      }
+
+      $panes[$pane_id] = $pane;
+    }
+
+    // Sort the panes by their weight value.
+    uasort($panes, 'drupal_sort_weight');
+  }
+
+  // Apply conditions to the returned panes if specified.
+  if (!empty($conditions)) {
+    $matching_panes = array();
+
+    foreach ($panes as $pane_id => $pane) {
+      // Check the pane against the conditions array to determine whether to add
+      // it to the return array or not.
+      $valid = TRUE;
+
+      foreach ($conditions as $property => $value) {
+        // If the current value for the specified property on the pane does not
+        // match the filter value...
+        if ($pane[$property] != $value) {
+          // Do not add it to the temporary array.
+          $valid = FALSE;
+        }
+      }
+
+      if ($valid) {
+        $matching_panes[$pane_id] = $pane;
+      }
+    }
+
+    return $matching_panes;
+  }
+
+  return $panes;
+}
+
+/**
+ * Returns the specified callback for the given pane if it's available,
+ *   loading the pane include file if specified.
+ *
+ * @param $pane
+ *   The pane array.
+ * @param $callback
+ *   The function to return, one of:
+ *   - settings_form
+ *   - form
+ *   - form_validate
+ *   - form_submit
+ *   - review
+ *
+ * @return string|boolean
+ *   A string containing the name of the callback function or FALSE if it could
+ *     not be found.
+ */
+function mf_pane_callback($pane, $callback) {
+  // Include the checkout pane file if specified.
+  if (!empty($pane['file'])) {
+    $parts = explode('.', $pane['file']);
+    module_load_include(array_pop($parts), $pane['module'], implode('.', $parts));
+  }
+
+  // If the specified callback function exists, return it.
+  if (!empty($pane['callbacks'][$callback]) &&
+    function_exists($pane['callbacks'][$callback])) {
+    return $pane['callbacks'][$callback];
+  }
+
+  // Otherwise return FALSE.
+  return FALSE;
+}

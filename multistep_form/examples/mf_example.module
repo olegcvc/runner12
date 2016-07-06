@@ -1,0 +1,152 @@
+<?php
+
+
+/**
+ * Implements hook_menu().
+ */
+function mf_example_menu() {
+  $items = array();
+  $items['mf-example'] = array(
+    'title' => 'Multi-step ajax form example',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('mf_form', 'form1'),
+    'access callback' => TRUE,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_mf_steps_info().
+ */
+function mf_example_mf_steps_info() {
+  $steps = array();
+
+  $steps['form1'] = array(
+    'personal_info' => array(
+      'title' => t('Personal information'),
+      'panes' => array(
+        'title',
+        'name',
+        'extra_names',
+        //'steps',
+      )
+    ),
+    'other_data' => array(
+      'title' => t('Other data'),
+      'panes' => array(
+        'title',
+        'other',
+        //'steps',
+      ),
+    ),
+    'review' => array(
+      'title' => t('Review'),
+      'next_value' => t('Finish'),
+      'panes' => array(
+        'title',
+        'review',
+        //'steps',
+      ),
+    ),
+    'completed' => array(
+      'title' => t('Completed'),
+      'buttons' => FALSE,
+      'weight' => 50,
+      'panes' => array(
+        'title',
+        'completed',
+      ),
+    ),
+  );
+
+  return $steps;
+}
+
+/**
+ * Implements hook_commerce_checkout_pane_info().
+ */
+function mf_example_mf_pane_info() {
+  $panes = array();
+
+  $panes['name'] = array(
+    'title' => t('Name'),
+    'file' => 'includes/panes.inc',
+    'fieldset' => FALSE,
+  );
+  $panes['extra_names'] = array(
+    'title' => t('Extra names'),
+    'file' => 'includes/panes.inc',
+    'fieldset' => FALSE,
+  );
+  $panes['other'] = array(
+    'title' => t('Other'),
+    'file' => 'includes/panes.inc',
+    'fieldset' => FALSE,
+  );
+  $panes['review'] = array(
+    'title' => t('Review results'),
+    'file' => 'includes/panes.inc',
+    'fieldset' => FALSE,
+  );
+  $panes['completed'] = array(
+    'title' => t('Completion message'),
+    'file' => 'includes/panes.inc',
+    'fieldset' => FALSE,
+  );
+
+  return $panes;
+}
+
+/**
+ * Implements hook_form_BASE_FORM_ID_alter().
+ * Add steps progress widget wo actions.
+ */
+function mf_example_form_mf_form_alter(&$form, $form_state, $form_id) {
+  if (empty($form['actions'])) {
+    return;
+  }
+
+  // Add steps progress.
+  $mf_id = $form_state['storage']['mf_id'];
+  $current_step = $form_state['storage']['step'];
+  $progress = mf_steps_build_buttons($mf_id, $current_step);
+  $form['actions']['progress'] = array(
+    '#type' => 'container',
+    '#weight' => 2,
+  );
+
+  // Sort buttons.
+  $form['actions']['progress'][] = $progress;
+  $form['actions']['back']['#weight'] = 1;
+  $form['actions']['next']['#weight'] = 3;
+}
+
+/**
+ * Implements hook_mf_complete().
+ */
+function mf_example_mf_complete($form, $form_state) {
+  $message = '<strong>Entered values</strong>: <br/>';
+  $message .= '<br/>';
+  foreach ($form_state['storage']['values'] as $step => $values) {
+    $message .= "$step: <br/>";
+    foreach ($values as $key => $value) {
+      if ($key == 'steps') {
+        continue;
+      }
+      $output = '';
+      if (is_array($value)) {
+        foreach ($value as $k => $val) {
+          if ($k == 'ajax_button') {
+            continue;
+          }
+          $output .= $k . '=' . ($val ? $val . '; ' : '') . '<br/>';
+        }
+      }
+      $message .= "$key: $output";
+    }
+    $message .= '<br/>';
+  }
+  $message .= '<br/>';
+
+  drupal_set_message($message);
+}
